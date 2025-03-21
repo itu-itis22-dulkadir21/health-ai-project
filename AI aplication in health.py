@@ -556,4 +556,195 @@ if images:
     # Sonuçları görselleştir
     visualize_clusters(images, image_paths, clusters, ssim_matrix)
 else:
-    print("Görüntü bulunamadı veya yüklenemedi.")    
+    print("Görüntü bulunamadı veya yüklenemedi.")
+
+"""TASK-D: Autoencoder + t-SNE"""
+
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+import cv2
+from tensorflow.keras.layers import Input, Dense, Flatten, Reshape
+from tensorflow.keras.models import Model
+from tensorflow.keras.optimizers import Adam
+from sklearn.manifold import TSNE
+from sklearn.cluster import KMeans
+import seaborn as sns
+
+# 📌 1️⃣ BT Görüntülerini Yükleme ve Hazırlama
+def load_gray_images(ct_directory, target_size=(128, 128)):
+    """BT görüntülerini yükleyip gri tonlamaya çevirir."""
+    image_paths = []
+    images = []
+    valid_extensions = ['.jpg', '.jpeg', '.png', '.tif', '.dcm']
+
+    for filename in os.listdir(ct_directory):
+        if os.path.splitext(filename)[1].lower() in valid_extensions:
+            img_path = os.path.join(ct_directory, filename)
+            img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+            if img is not None:
+                img = cv2.resize(img, target_size)  # Tüm görselleri aynı boyuta getir
+                images.append(img)
+                image_paths.append(img_path)
+
+    print(f"Toplam {len(images)} görüntü yüklendi.")
+    images = np.array(images).astype("float32") / 255.0  # Normalizasyon
+    images = np.expand_dims(images, axis=-1)  # Keras için kanal boyutu ekle (128, 128, 1)
+    return images, image_paths
+
+# 📌 2️⃣ Convolutional Autoencoder Modelini Tanımla
+def build_autoencoder(input_shape=(128, 128, 1), latent_dim=64):
+    """Convolutional autoencoder mimarisini oluşturur."""
+    from tensorflow.keras.layers import Conv2D, MaxPooling2D, UpSampling2D, Dense, Flatten, Reshape, Input
+    
+    # Encoder
+    input_img = Input(shape=input_shape)
+    
+    # Convolutional layers
+    x = Conv2D(32, (3, 3), activation='relu', padding='same')(input_img)
+    x = MaxPooling2D((2, 2), padding='same')(x)  # 64x64
+    
+    x = Conv2D(16, (3, 3), activation='relu', padding='same')(x)
+    x = MaxPooling2D((2, 2), padding='same')(x)  # 32x32
+    
+    x = Conv2D(8, (3, 3), activation='relu', padding='same')(x)
+    x = MaxPooling2D((2, 2), padding='same')(x)  # 16x16
+    
+    # Flatten and compress to latent space
+    x = Flatten()(x)
+    encoded = Dense(latent_dim, activation='relu')(x)
+    
+    # Decoder
+    # First reconstruct the 3D shape
+    x = Dense(16 * 16 * 8, activation='relu')(encoded)
+    x = Reshape((16, 16, 8))(x)
+    
+    # Deconvolutional layers
+    x = Conv2D(8, (3, 3), activation='relu', padding='same')(x)
+    x = UpSampling2D((2, 2))(x)  # 32x32
+    
+    x = Conv2D(16, (3, 3), activation='relu', padding='same')(x)
+    x = UpSampling2D((2, 2))(x)  # 64x64
+    
+    x = Conv2D(32, (3, 3), activation='relu', padding='same')(x)
+    x = UpSampling2D((2, 2))(x)  # 128x128
+    
+    # Output layer
+    decoded = Conv2D(1, (3, 3), activation='sigmoid', padding='same')(x)
+    
+    # Models
+    autoencoder = Model(input_img, decoded)
+    encoder = Model(input_img, encoded)
+    
+    autoencoder.compile(optimizer=Adam(learning_rate=0.001), loss="mse")
+    return autoencoder, encoder
+# 📌 3️⃣ Autoencoder Eğitme
+def train_autoencoder(images, epochs=20, batch_size=16):
+    """Autoencoder'ı verilen görüntülerle eğitir."""
+    from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+    
+    # Early stopping ve model checkpoint tanımla
+    callbacks = [
+        EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True),
+        ModelCheckpoint("autoencoder_best.h5", monitor="val_loss", save_best_only=True)
+    ]
+    
+    # Model oluştur
+    autoencoder, encoder = build_autoencoder(input_shape=images.shape[1:], latent_dim=64)
+    
+    # Model özeti yazdır (opsiyonel)
+    autoencoder.summary()
+    
+    # Eğitim - callbacks parametresi eklendi
+    autoencoder.fit(
+        images, images, 
+        epochs=epochs, 
+        batch_size=batch_size, 
+        shuffle=True, 
+        validation_split=0.2,
+        callbacks=callbacks
+    )
+    
+    return autoencoder, encoder
+
+"""Underline code is OPTİONAL"""
+# Görüntü rekonstrüksiyonlarını görselleştir
+def plot_reconstructions(autoencoder, images, n=5):
+    """Orijinal ve rekonstrükte edilmiş görüntüleri karşılaştır."""
+    # Rastgele görüntü seç
+    indices = np.random.choice(range(len(images)), n, replace=False)
+    sample_images = images[indices]
+    
+    # Görüntüleri rekonstrükte et
+    reconstructions = autoencoder.predict(sample_images)
+    
+    # Görselleştir
+    plt.figure(figsize=(15, 3))
+    for i in range(n):
+        # Orijinal
+        plt.subplot(2, n, i+1)
+        plt.imshow(sample_images[i].squeeze(), cmap='gray')
+        plt.title("Orijinal")
+        plt.axis('off')
+        
+        # Rekonstrüksiyon
+        plt.subplot(2, n, i+n+1)
+        plt.imshow(reconstructions[i].squeeze(), cmap='gray')
+        plt.title("Rekonstrüksiyon")
+        plt.axis('off')
+    
+    plt.tight_layout()
+    plt.show()
+
+
+
+# 📌 4️⃣ Latent Uzaydan 64 Boyutlu Temsil Çıkartma
+def extract_latent_features(encoder, images):
+    """Eğitilen encoder modelinden 64 boyutlu latent özellikleri çıkarır."""
+    return encoder.predict(images)
+
+# 📌 5️⃣ t-SNE ile 2D'ye İndirme ve Kümeleme
+def tsne_and_cluster(latent_features, image_paths):
+    """Latent uzaydan 2D'ye indirgeme ve kümeleme yapar."""
+    tsne = TSNE(n_components=2, perplexity=30, random_state=42)
+    features_2d = tsne.fit_transform(latent_features)
+
+    # K-means Kümeleme (Opsiyonel)
+    kmeans = KMeans(n_clusters=3, random_state=42)
+    clusters = kmeans.fit_predict(latent_features)
+
+    # Görselleştirme
+    plt.figure(figsize=(10, 8))
+    sns.scatterplot(x=features_2d[:, 0], y=features_2d[:, 1], hue=clusters, palette="viridis", s=100)
+    plt.title("Autoencoder + t-SNE Kümeleme Sonuçları")
+    plt.xlabel("t-SNE Bileşeni 1")
+    plt.ylabel("t-SNE Bileşeni 2")
+    
+    # Küme isimlerini ekle
+    for i, txt in enumerate([os.path.basename(p) for p in image_paths]):
+        plt.annotate(txt, (features_2d[i, 0], features_2d[i, 1]), fontsize=8, alpha=0.7)
+
+    plt.legend(title="Küme ID")
+    plt.grid(alpha=0.3)
+    plt.show()
+
+# 📌 **Ana İşlem Adımları**
+ct_directory = input("BT görüntülerinin bulunduğu dizini girin: ")
+images, image_paths = load_gray_images(ct_directory)
+
+
+if len(images) > 0:
+    # **Autoencoder Eğit**
+    autoencoder, encoder = train_autoencoder(images, epochs=20, batch_size=16)
+    
+    # Rekonstrüksiyonları görselleştir
+    plot_reconstructions(autoencoder, images, n=5)
+    
+    # **Latent Özellikleri Çıkar**
+    latent_features = extract_latent_features(encoder, images)
+    print(f"Latent Uzay Şekli: {latent_features.shape}")  # (num_images, 64)
+
+    # **t-SNE ile 2D’ye İndir ve Kümele**
+    tsne_and_cluster(latent_features, image_paths)
+else:
+    print("Görüntü bulunamadı veya yüklenemedi.")
