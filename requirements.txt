@@ -1,0 +1,10 @@
+opencv-python
+numpy==1.23.5
+scikit-learn
+pydicom
+nibabel
+scikit-image==0.20.0
+tensorflow==2.10.1
+keras==2.10.0
+matplotlib
+tqdm
